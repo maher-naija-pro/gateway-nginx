@@ -10,10 +10,12 @@ receivers:
     include_file_path: true
     include_file_path_resolved: true
     operators:
-      # Parse nginx log format: $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent ...
+      # Parse enhanced nginx log format with timing information
+      # Format: $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent ... rt=$request_time uct="$upstream_connect_time" uht="$upstream_header_time" urt="$upstream_response_time"
+      # Note: Timing fields may be empty strings if not available
       - type: regex_parser
         id: nginx_parser
-        regex: '^(?P<remote_addr>\S+) - (?P<remote_user>\S+) \[(?P<time_local>[^\]]+)\] "(?P<request_method>\S+) (?P<request_uri>\S+) (?P<http_version>\S+)" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)" "(?P<http_x_forwarded_for>[^"]*)"'
+        regex: '^(?P<remote_addr>\S+) - (?P<remote_user>\S+) \[(?P<time_local>[^\]]+)\] "(?P<request_method>\S+) (?P<request_uri>\S+) (?P<http_version>\S+)" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)" "(?P<http_x_forwarded_for>[^"]*)" rt=(?P<request_time>[\d.]+) uct="(?P<upstream_connect_time>[^"]*)" uht="(?P<upstream_header_time>[^"]*)" urt="(?P<upstream_response_time>[^"]*)"'
         parse_from: body
         timestamp:
           parse_from: attributes.time_local
@@ -74,7 +76,7 @@ processors:
         value: production
         action: upsert
 
-  # Transform processor to add attributes for metrics
+  # Transform processor to add attributes for metrics and detect rate limiting/timeouts
   transform:
     log_statements:
       - context: log
@@ -84,6 +86,84 @@ processors:
           - set(attributes["http.status_code"], attributes["status"])
           - set(attributes["http.method"], attributes["request_method"])
           - set(attributes["http.route"], attributes["route"])
+          # Detect rate limiting (429 status code)
+          - set(attributes["rate_limit_hit"], attributes["status"] == "429")
+          # Detect timeout events (504 Gateway Timeout, 408 Request Timeout, or long response times)
+          # Consider timeout if status is 504 or 408, or if request_time > 600s (proxy_read_timeout)
+          - set(attributes["timeout_hit"], attributes["status"] == "504" || attributes["status"] == "408" || (IsDouble(attributes["request_time"]) && attributes["request_time"] > 600.0))
+          # Add timeout type attribute
+          - set(attributes["timeout_type"], attributes["status"] == "504" ? "gateway_timeout" : (attributes["status"] == "408" ? "request_timeout" : (IsDouble(attributes["request_time"]) && attributes["request_time"] > 600.0 ? "response_timeout" : "")))
+          # Keep request_time and upstream_response_time for metrics
+          - set(attributes["request_time"], attributes["request_time"])
+          - set(attributes["upstream_response_time"], attributes["upstream_response_time"])
+
+  # Count processor to generate metrics from logs
+  # Note: The count processor generates metrics from log records matching specific attributes
+  
+  # Per-user rate limit hits (429 status codes) - includes user_ip label
+  count/rate_limit_per_user:
+    metric_name: nginx_rate_limit_hits_total
+    description: "Total number of rate limit hits (429 status codes) per user"
+    match_type: strict
+    count_attributes:
+      - key: rate_limit_hit
+        value: "true"
+    metric_attributes:
+      - key: route
+        from_attribute: route
+      - key: user_ip
+        from_attribute: user_ip
+      - key: http_method
+        from_attribute: request_method
+
+  # Global rate limit hits (429 status codes) - aggregated across all users
+  count/rate_limit_global:
+    metric_name: nginx_rate_limit_hits_global_total
+    description: "Total number of rate limit hits (429 status codes) - global aggregated"
+    match_type: strict
+    count_attributes:
+      - key: rate_limit_hit
+        value: "true"
+    metric_attributes:
+      - key: route
+        from_attribute: route
+      - key: http_method
+        from_attribute: request_method
+
+  # Per-user timeout events (504, 408, or response time > 600s) - includes user_ip label
+  count/timeouts_per_user:
+    metric_name: nginx_timeout_events_total
+    description: "Total number of timeout events (504, 408, or response time > 600s) per user"
+    match_type: strict
+    count_attributes:
+      - key: timeout_hit
+        value: "true"
+    metric_attributes:
+      - key: route
+        from_attribute: route
+      - key: timeout_type
+        from_attribute: timeout_type
+      - key: user_ip
+        from_attribute: user_ip
+      - key: http_method
+        from_attribute: request_method
+
+  # Global timeout events (504, 408, or response time > 600s) - aggregated across all users
+  count/timeouts_global:
+    metric_name: nginx_timeout_events_global_total
+    description: "Total number of timeout events (504, 408, or response time > 600s) - global aggregated"
+    match_type: strict
+    count_attributes:
+      - key: timeout_hit
+        value: "true"
+    metric_attributes:
+      - key: route
+        from_attribute: route
+      - key: timeout_type
+        from_attribute: timeout_type
+      - key: http_method
+        from_attribute: request_method
+
 
 exporters:
   # Prometheus exporter for metrics (will be populated by Tempo metrics generator)
@@ -109,8 +189,15 @@ exporters:
 service:
   pipelines:
     # Logs pipeline: parse nginx logs and send to Tempo
-    # Tempo's metrics generator will create metrics from these logs
+    # The count processors will generate metrics from logs
     logs:
       receivers: [filelog]
-      processors: [batch, resource, transform]
+      processors: [batch, resource, transform, count/rate_limit_per_user, count/rate_limit_global, count/timeouts_per_user, count/timeouts_global]
       exporters: [otlp/tempo, debug]
+    
+    # Metrics pipeline: export rate limiting and timeout metrics to Prometheus
+    # The count processors generate metrics from logs (both global and per-user), which are exported here
+    metrics:
+      receivers: [filelog]
+      processors: [batch, resource, transform, count/rate_limit_per_user, count/rate_limit_global, count/timeouts_per_user, count/timeouts_global]
+      exporters: [prometheus]

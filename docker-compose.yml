@@ -114,6 +114,27 @@ services:
       - nginx-network
     restart: unless-stopped
 
+  # OpenTelemetry Collector - Collects logs and generates metrics for rate limiting and timeouts
+  # Using contrib image which includes additional processors like count
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    command: [ "--config=/etc/otel-collector-config.yml" ]
+    volumes:
+      - ./monitoring/otel-collector/otel-collector-config.yml:/etc/otel-collector-config.yml:ro
+      - nginx-logs:/var/log/nginx:ro
+    ports:
+      - "8889:8889" # Prometheus metrics endpoint
+      - "4317:4317" # OTLP gRPC receiver
+      - "4318:4318" # OTLP HTTP receiver
+    depends_on:
+      - nginx-proxy
+      - tempo
+    networks:
+      - monitoring-network
+      - nginx-network
+    restart: unless-stopped
+
   # Grafana - Visualization and dashboards
   grafana:
     image: grafana/grafana:latest
