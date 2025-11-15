@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # Nginx Reverse Proxy
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    ports:
+      - "0.0.0.0:80:80"   # HTTP (bind to all interfaces, accepts 80.247.0.31)
+      - "0.0.0.0:443:443" # HTTPS (bind to all interfaces, accepts 80.247.0.31)
+    volumes:
+      - ./nginx-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-proxy/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx-proxy/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - nginx-service1
+      - nginx-service2
+    networks:
+      - nginx-network
+    restart: unless-stopped
+
+  # First Nginx Service
+  nginx-service1:
+    image: nginx:alpine
+    container_name: nginx-service1
+    volumes:
+      - ./nginx-service1/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-service1/html:/usr/share/nginx/html:ro
+    networks:
+      - nginx-network
+    restart: unless-stopped
+
+  # Second Nginx Service
+  nginx-service2:
+    image: nginx:alpine
+    container_name: nginx-service2
+    volumes:
+      - ./nginx-service2/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-service2/html:/usr/share/nginx/html:ro
+    networks:
+      - nginx-network
+    restart: unless-stopped
+
+networks:
+  nginx-network:
+    driver: bridge
+

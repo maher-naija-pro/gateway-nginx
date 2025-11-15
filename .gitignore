@@ -1,0 +1,8 @@
+# SSL certificates (generated, should not be committed)
+nginx-proxy/ssl/*.crt
+nginx-proxy/ssl/*.key
+nginx-proxy/ssl/*.pem
+
+# Keep the directory structure
+!nginx-proxy/ssl/.gitkeep
+
