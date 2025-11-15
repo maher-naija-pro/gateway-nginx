@@ -144,6 +144,49 @@ curl http://80.247.0.31/server1/
 curl http://80.247.0.31/server2/
 ```
 
+## Monitoring Stack
+
+The setup includes a complete observability stack with Prometheus, Tempo, and Grafana:
+
+### Services
+
+- **Prometheus** (port 9090): Metrics collection and storage
+- **Grafana** (port 3000): Visualization and dashboards
+- **Tempo** (port 3200): Distributed tracing backend
+- **Nginx Exporter** (port 9113): Exports nginx metrics to Prometheus
+
+### Access
+
+- **Prometheus UI**: http://localhost:9090
+- **Grafana UI**: http://localhost:3000
+  - Username: `admin`
+  - Password: `admin`
+- **Tempo UI**: http://localhost:3200
+- **Nginx Metrics**: http://localhost:9113/metrics
+
+### Metrics Collection
+
+- Nginx metrics are exposed via `stub_status` on port 8080 (internal)
+- Nginx Prometheus Exporter scrapes metrics and converts them to Prometheus format
+- Prometheus scrapes metrics from:
+  - Nginx Exporter (nginx metrics)
+  - Prometheus itself
+  - Tempo
+  - Grafana
+
+### Grafana Dashboards
+
+- Pre-configured datasources for Prometheus and Tempo
+- Nginx Gateway Monitoring dashboard (auto-provisioned)
+- Custom dashboards can be added in `monitoring/grafana/dashboards/`
+
+### Distributed Tracing
+
+- Tempo is configured to receive traces via OTLP (OpenTelemetry Protocol)
+- HTTP receiver on port 4318
+- gRPC receiver on port 4317
+- Traces can be queried in Grafana using the Tempo datasource
+
 ## Production Considerations
 
 For production use:
@@ -151,5 +194,9 @@ For production use:
 2. Update server names in configuration files
 3. Configure proper firewall rules
 4. Enable additional security headers
-5. Set up proper logging and monitoring
-6. Configure rate limiting and DDoS protection
+5. Set up proper logging and monitoring (already configured)
+6. Configure rate limiting and DDoS protection (already configured)
+7. Change default Grafana admin password
+8. Configure authentication for monitoring endpoints
+9. Set up alerting rules in Prometheus
+10. Configure backup for Prometheus and Grafana data volumes

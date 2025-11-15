@@ -6,8 +6,9 @@ services:
     image: nginx:alpine
     container_name: nginx-proxy
     ports:
-      - "0.0.0.0:80:80"   # HTTP (bind to all interfaces, accepts 80.247.0.31)
+      - "0.0.0.0:80:80" # HTTP (bind to all interfaces, accepts 80.247.0.31)
       - "0.0.0.0:443:443" # HTTPS (bind to all interfaces, accepts 80.247.0.31)
+      - "8080:8080" # Metrics endpoint (internal)
     volumes:
       - ./nginx-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx-proxy/conf.d:/etc/nginx/conf.d:ro
@@ -17,6 +18,21 @@ services:
       - nginx-service2
     networks:
       - nginx-network
+      - monitoring-network
+    restart: unless-stopped
+
+  # Nginx Prometheus Exporter for metrics
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:latest
+    container_name: nginx-exporter
+    command:
+      - '-nginx.scrape-uri=http://nginx-proxy:8080/metrics'
+    ports:
+      - "9113:9113"
+    depends_on:
+      - nginx-proxy
+    networks:
+      - monitoring-network
     restart: unless-stopped
 
   # First Nginx Service
@@ -41,7 +57,71 @@ services:
       - nginx-network
     restart: unless-stopped
 
+  # Prometheus - Metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+
+  # Tempo - Distributed tracing
+  tempo:
+    image: grafana/tempo:latest
+    container_name: tempo
+    ports:
+      - "3200:3200" # Tempo
+      - "4317:4317" # OTLP gRPC receiver
+      - "4318:4318" # OTLP HTTP receiver
+    command: [ "-config.file=/etc/tempo/tempo.yml" ]
+    volumes:
+      - ./monitoring/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+
+  # Grafana - Visualization and dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - tempo
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+
 networks:
   nginx-network:
     driver: bridge
+  monitoring-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  tempo-data:
+  grafana-data:
+
 
