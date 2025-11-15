@@ -90,8 +90,8 @@ timeout_events_global_total = Counter(
 # Track active users and their request counts
 active_users = defaultdict(int)
 user_last_seen = {}
-log_file_path = '/var/log/nginx/access.log'
-log_position_file = '/tmp/nginx_log_position.txt'
+# Read from stdin instead of log file
+read_from_stdin = True
 
 
 def parse_log_line(line):
@@ -172,97 +172,65 @@ def parse_log_line(line):
         return None
 
 
-def get_log_position():
-    """Get the last read position in the log file."""
-    if os.path.exists(log_position_file):
-        try:
-            with open(log_position_file, 'r') as f:
-                return int(f.read().strip())
-        except (ValueError, IOError):
-            return 0
-    return 0
-
-
-def save_log_position(position):
-    """Save the current log file position."""
-    try:
-        with open(log_position_file, 'w') as f:
-            f.write(str(position))
-    except IOError:
-        pass
-
-
-def process_log_file():
-    """Process nginx log file and update metrics."""
-    if not os.path.exists(log_file_path):
-        return
-
-    position = get_log_position()
+def process_log_line(line):
+    """Process a single log line and update metrics."""
     current_time = time.time()
+    
+    log_entry = parse_log_line(line)
+    if not log_entry:
+        return
+    
+    user_ip = log_entry['user_ip']
+    route = log_entry['route']
+    method = log_entry['method']
 
-    try:
-        with open(log_file_path, 'r') as f:
-            f.seek(position)
+    # Update basic metrics
+    user_requests_total.labels(
+        user_ip=user_ip,
+        status=log_entry['status'],
+        method=method,
+        route=route
+    ).inc()
 
-            for line in f:
-                log_entry = parse_log_line(line)
-                if log_entry:
-                    user_ip = log_entry['user_ip']
-                    route = log_entry['route']
-                    method = log_entry['method']
+    user_bytes_total.labels(
+        user_ip=user_ip,
+        direction='sent'
+    ).inc(log_entry['bytes_sent'])
 
-                    # Update basic metrics
-                    user_requests_total.labels(
-                        user_ip=user_ip,
-                        status=log_entry['status'],
-                        method=method,
-                        route=route
-                    ).inc()
+    # Update rate limiting metrics (per-user and global)
+    if log_entry.get('rate_limit_hit', False):
+        rate_limit_hits_total.labels(
+            user_ip=user_ip,
+            route=route,
+            http_method=method
+        ).inc()
 
-                    user_bytes_total.labels(
-                        user_ip=user_ip,
-                        direction='sent'
-                    ).inc(log_entry['bytes_sent'])
+        rate_limit_hits_global_total.labels(
+            route=route,
+            http_method=method
+        ).inc()
 
-                    # Update rate limiting metrics (per-user and global)
-                    if log_entry.get('rate_limit_hit', False):
-                        rate_limit_hits_total.labels(
-                            user_ip=user_ip,
-                            route=route,
-                            http_method=method
-                        ).inc()
+    # Update timeout metrics (per-user and global)
+    if log_entry.get('timeout_hit', False):
+        timeout_type = log_entry.get('timeout_type', 'unknown')
+        timeout_events_total.labels(
+            user_ip=user_ip,
+            route=route,
+            timeout_type=timeout_type,
+            http_method=method
+        ).inc()
 
-                        rate_limit_hits_global_total.labels(
-                            route=route,
-                            http_method=method
-                        ).inc()
+        timeout_events_global_total.labels(
+            route=route,
+            timeout_type=timeout_type,
+            http_method=method
+        ).inc()
 
-                    # Update timeout metrics (per-user and global)
-                    if log_entry.get('timeout_hit', False):
-                        timeout_type = log_entry.get('timeout_type', 'unknown')
-                        timeout_events_total.labels(
-                            user_ip=user_ip,
-                            route=route,
-                            timeout_type=timeout_type,
-                            http_method=method
-                        ).inc()
-
-                        timeout_events_global_total.labels(
-                            route=route,
-                            timeout_type=timeout_type,
-                            http_method=method
-                        ).inc()
-
-                    # Track active users
-                    active_users[user_ip] += 1
-                    user_last_seen[user_ip] = current_time
-                    user_last_request_time.labels(
-                        user_ip=user_ip).set(current_time)
-
-            save_log_position(f.tell())
-
-    except IOError:
-        pass
+    # Track active users
+    active_users[user_ip] += 1
+    user_last_seen[user_ip] = current_time
+    user_last_request_time.labels(
+        user_ip=user_ip).set(current_time)
 
 
 def update_active_connections():
@@ -292,17 +260,40 @@ def calculate_requests_per_second():
             user_requests_per_second.labels(user_ip=user_ip).set(rps)
 
 
-def log_processor_loop():
-    """Main loop for processing log file."""
+def metrics_updater_loop():
+    """Periodically update active connections and RPS metrics."""
     while True:
         try:
-            process_log_file()
+            time.sleep(5)
             update_active_connections()
             calculate_requests_per_second()
-            time.sleep(5)
         except Exception as e:
-            print(f"Error in log processor loop: {e}", file=sys.stderr)
+            print(f"Error in metrics updater loop: {e}", file=sys.stderr)
             time.sleep(5)
+
+
+def log_processor_loop():
+    """Main loop for processing logs from stdin."""
+    if read_from_stdin:
+        # Read from stdin line by line
+        try:
+            for line in sys.stdin:
+                line = line.strip()
+                if line:
+                    process_log_line(line)
+        except Exception as e:
+            print(f"Error reading from stdin: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Fallback: process log file (for backward compatibility)
+        while True:
+            try:
+                # This would need the old process_log_file() function
+                # Keeping for backward compatibility if needed
+                time.sleep(5)
+            except Exception as e:
+                print(f"Error in log processor loop: {e}", file=sys.stderr)
+                time.sleep(5)
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -329,13 +320,21 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
 def main():
     """Main entry point."""
+    # Start log processor thread (reads from stdin)
     processor_thread = Thread(target=log_processor_loop, daemon=True)
     processor_thread.start()
+    
+    # Start metrics updater thread (updates active connections and RPS periodically)
+    metrics_thread = Thread(target=metrics_updater_loop, daemon=True)
+    metrics_thread.start()
 
     port = int(os.environ.get('EXPORTER_PORT', '9114'))
     server = HTTPServer(('0.0.0.0', port), MetricsHandler)
-    print(f"Starting user stats exporter on port {port}")
-    print(f"Monitoring log file: {log_file_path}")
+    print(f"Starting user stats exporter on port {port}", file=sys.stderr)
+    if read_from_stdin:
+        print("Reading logs from stdin", file=sys.stderr)
+    else:
+        print(f"Monitoring log file: {log_file_path}", file=sys.stderr)
 
     try:
         server.serve_forever()

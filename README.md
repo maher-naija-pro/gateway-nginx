@@ -162,17 +162,135 @@ The setup includes a complete observability stack with Prometheus, Tempo, and Gr
   - Username: `admin`
   - Password: `admin`
 - **Tempo UI**: http://localhost:3200
-- **Nginx Metrics**: http://localhost:9113/metrics
+- **Nginx Exporter Metrics**: http://localhost:9113/metrics
+- **User Stats Exporter Metrics**: http://localhost:9114/metrics
+- **OpenTelemetry Collector Metrics**: http://localhost:8889/metrics
 
 ### Metrics Collection
 
 - Nginx metrics are exposed via `stub_status` on port 8080 (internal)
 - Nginx Prometheus Exporter scrapes metrics and converts them to Prometheus format
 - Prometheus scrapes metrics from:
-  - Nginx Exporter (nginx metrics)
-  - Prometheus itself
-  - Tempo
-  - Grafana
+  - Nginx Exporter (nginx metrics) - port 9113
+  - User Stats Exporter (per-user metrics) - port 9114
+  - OpenTelemetry Collector (rate limiting and timeout metrics) - port 8889
+  - Prometheus itself - port 9090
+  - Tempo - port 3200
+  - Grafana - port 3000
+
+### Prometheus Metrics
+
+The following metrics are available in Prometheus:
+
+#### Nginx Standard Metrics (from nginx-prometheus-exporter)
+
+- `nginx_http_requests_total` - Total number of HTTP requests (labels: `status`)
+- `nginx_connections_active` - Number of active connections
+- `nginx_connections_accepted` - Total number of accepted connections
+- `nginx_connections_handled` - Total number of handled connections
+- `nginx_connections_reading` - Number of connections reading request headers
+- `nginx_connections_writing` - Number of connections writing response
+- `nginx_connections_waiting` - Number of idle connections waiting for requests
+
+#### Per-User Metrics (from user-stats-exporter)
+
+- `nginx_user_requests_total` - Total requests per user (labels: `user_ip`, `status`, `method`, `route`)
+- `nginx_user_bytes_total` - Total bytes transferred per user (labels: `user_ip`, `direction`)
+- `nginx_user_request_duration_seconds` - Request duration histogram per user (labels: `user_ip`, `route`)
+- `nginx_user_active_connections` - Active connections per user (labels: `user_ip`)
+- `nginx_user_requests_per_second` - Requests per second per user (labels: `user_ip`)
+- `nginx_user_last_request_time` - Unix timestamp of last request per user (labels: `user_ip`)
+
+#### Rate Limiting Metrics
+
+- `nginx_rate_limit_hits_total` - Rate limit hits per user (labels: `user_ip`, `route`, `http_method`)
+- `nginx_rate_limit_hits_global_total` - Global rate limit hits aggregated (labels: `route`, `http_method`)
+
+#### Timeout Metrics
+
+- `nginx_timeout_events_total` - Timeout events per user (labels: `user_ip`, `route`, `timeout_type`, `http_method`)
+- `nginx_timeout_events_global_total` - Global timeout events aggregated (labels: `route`, `timeout_type`, `http_method`)
+
+### Prometheus Query Examples
+
+Query metrics in Prometheus UI (http://localhost:9090) using PromQL:
+
+```promql
+# Total requests per second (all status codes)
+rate(nginx_http_requests_total[1m])
+
+# Requests per second by status code
+rate(nginx_http_requests_total[1m]) by (status)
+
+# Active connections
+nginx_connections_active
+
+# Total requests per user
+sum(nginx_user_requests_total) by (user_ip)
+
+# Requests per second per user
+sum(rate(nginx_user_requests_total[1m])) by (user_ip)
+
+# Rate limit hits per user
+sum(nginx_rate_limit_hits_total) by (user_ip)
+
+# Rate limit hits by route
+sum(nginx_rate_limit_hits_global_total) by (route)
+
+# Timeout events by type
+sum(nginx_timeout_events_global_total) by (timeout_type)
+
+# Request duration percentiles per user (p95)
+histogram_quantile(0.95, sum(rate(nginx_user_request_duration_seconds_bucket[5m])) by (user_ip, le))
+
+# Top 10 users by request count
+topk(10, sum(nginx_user_requests_total) by (user_ip))
+
+# Error rate (4xx and 5xx status codes)
+sum(rate(nginx_http_requests_total{status=~"4..|5.."}[1m]))
+
+# Rate limit hit rate
+rate(nginx_rate_limit_hits_global_total[1m])
+```
+
+### Checking Metrics with curl
+
+You can query Prometheus metrics directly using curl:
+
+```bash
+# List all available metrics
+curl -s "http://localhost:9090/api/v1/label/__name__/values" | jq '.data[]' | grep nginx_
+
+# Query a specific metric (example: total requests)
+curl -s -G --data-urlencode "query=nginx_http_requests_total" \
+  "http://localhost:9090/api/v1/query" | jq '.'
+
+# Query requests per second
+curl -s -G --data-urlencode "query=rate(nginx_http_requests_total[1m])" \
+  "http://localhost:9090/api/v1/query" | jq '.'
+
+# Query per-user requests
+curl -s -G --data-urlencode "query=sum(nginx_user_requests_total) by (user_ip)" \
+  "http://localhost:9090/api/v1/query" | jq '.'
+
+# Check Prometheus targets status
+curl -s "http://localhost:9090/api/v1/targets" | jq '.data.activeTargets[] | {job: .labels.job, health: .health}'
+```
+
+**Quick check script**: Use the provided script for easier metric checking:
+
+```bash
+# Check all metrics
+./check-prometheus-metrics.sh
+
+# Check specific metric types
+./check-prometheus-metrics.sh nginx      # Nginx standard metrics
+./check-prometheus-metrics.sh user       # Per-user metrics
+./check-prometheus-metrics.sh rate-limit # Rate limiting metrics
+./check-prometheus-metrics.sh timeout    # Timeout metrics
+./check-prometheus-metrics.sh list       # List all available metrics
+./check-prometheus-metrics.sh targets    # Check target status
+```
 
 ### Grafana Dashboards
 
