@@ -142,7 +142,7 @@ services:
       - EXPORTER_PORT=9114
     volumes:
       - nginx-logs:/var/log/nginx:ro
-    command: sh -c "cat /var/log/nginx/access.log | python3 user_stats_exporter.py"
+    command: sh -c "tail -f /var/log/nginx/access.log | python3 user_stats_exporter.py"
     ports:
       - "9114:9114" # Prometheus metrics endpoint
     depends_on:
