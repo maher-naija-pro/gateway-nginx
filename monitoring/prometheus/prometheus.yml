@@ -48,3 +48,12 @@ scrape_configs:
           service: 'grafana'
           instance: 'grafana'
 
+  # User Stats Exporter per-user metrics
+  - job_name: 'user-stats-exporter'
+    static_configs:
+      - targets: ['user-stats-exporter:9114']
+        labels:
+          service: 'nginx-proxy'
+          instance: 'nginx-gateway'
+          metrics_type: 'per-user-stats'
+

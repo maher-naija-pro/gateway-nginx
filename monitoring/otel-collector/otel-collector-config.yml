@@ -1,0 +1,116 @@
+# OpenTelemetry Collector configuration for per-user stats
+# Simplified approach: parse logs and send to Tempo for metrics generation
+
+receivers:
+  # File log receiver to tail nginx access logs
+  filelog:
+    include:
+      - /var/log/nginx/access.log
+    start_at: end
+    include_file_path: true
+    include_file_path_resolved: true
+    operators:
+      # Parse nginx log format: $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent ...
+      - type: regex_parser
+        id: nginx_parser
+        regex: '^(?P<remote_addr>\S+) - (?P<remote_user>\S+) \[(?P<time_local>[^\]]+)\] "(?P<request_method>\S+) (?P<request_uri>\S+) (?P<http_version>\S+)" (?P<status>\d+) (?P<body_bytes_sent>\d+) "(?P<http_referer>[^"]*)" "(?P<http_user_agent>[^"]*)" "(?P<http_x_forwarded_for>[^"]*)"'
+        parse_from: body
+        timestamp:
+          parse_from: attributes.time_local
+          layout: '%d/%b/%Y:%H:%M:%S %z'
+      # Extract route from request_uri
+      - type: router
+        id: route_extractor
+        routes:
+          - output: server1_parser
+            expr: 'attributes.request_uri contains "/server1"'
+          - output: server2_parser
+            expr: 'attributes.request_uri contains "/server2"'
+          - output: root_parser
+            expr: 'true'
+        default: root_parser
+      # Set route attribute
+      - type: add
+        id: server1_parser
+        field: attributes.route
+        value: /server1
+      - type: add
+        id: server2_parser
+        field: attributes.route
+        value: /server2
+      - type: add
+        id: root_parser
+        field: attributes.route
+        value: /
+      # Set user_ip attribute (using remote_addr as user identifier)
+      - type: add
+        field: attributes.user_ip
+        value: EXPR(attributes.remote_addr)
+      # Add resource attributes for service identification
+      - type: add
+        field: resource.attributes.service.name
+        value: nginx-proxy
+      - type: add
+        field: resource.attributes.service.namespace
+        value: gateway
+
+processors:
+  # Batch processor for better performance
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  # Resource processor to add service name
+  resource:
+    attributes:
+      - key: service.name
+        value: nginx-proxy
+        action: upsert
+      - key: service.namespace
+        value: gateway
+        action: upsert
+      - key: deployment.environment
+        value: production
+        action: upsert
+
+  # Transform processor to add attributes for metrics
+  transform:
+    log_statements:
+      - context: log
+        statements:
+          # Ensure user_ip, status, method, route are available as attributes
+          - set(attributes["user_ip"], attributes["user_ip"])
+          - set(attributes["http.status_code"], attributes["status"])
+          - set(attributes["http.method"], attributes["request_method"])
+          - set(attributes["http.route"], attributes["route"])
+
+exporters:
+  # Prometheus exporter for metrics (will be populated by Tempo metrics generator)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    const_labels:
+      cluster: "nginx-gateway"
+      environment: "production"
+    metric_expiration: 180m
+    enable_open_metrics: true
+
+  # OTLP exporter for logs/traces to Tempo
+  # Tempo will generate metrics from spans/logs using span-metrics processor
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Debug exporter for troubleshooting
+  debug:
+    verbosity: normal
+
+service:
+  pipelines:
+    # Logs pipeline: parse nginx logs and send to Tempo
+    # Tempo's metrics generator will create metrics from these logs
+    logs:
+      receivers: [filelog]
+      processors: [batch, resource, transform]
+      exporters: [otlp/tempo, debug]
