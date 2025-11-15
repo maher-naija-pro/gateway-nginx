@@ -1923,7 +1923,7 @@
       "repeatDirection": "h",
       "targets": [
         {
-          "expr": "nginxlog_resp_bytes{instance=~\"$instance*\"}",
+          "expr": "rate(nginx_http_requests_total{instance=~\"$instance*\"}[5m])",
           "interval": "",
           "legendFormat": "",
           "refId": "A"
