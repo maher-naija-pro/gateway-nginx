@@ -24,21 +24,13 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   # Nginx metrics via nginx-prometheus-exporter
+  # The exporter scrapes stub_status from nginx-proxy:8080/metrics and converts to Prometheus format
   - job_name: 'nginx-exporter'
     static_configs:
       - targets: ['nginx-exporter:9113']
         labels:
           service: 'nginx-proxy'
           instance: 'nginx-gateway'
-
-  # Nginx stub_status (if needed)
-  - job_name: 'nginx-stub'
-    static_configs:
-      - targets: ['nginx-proxy:80']
-        labels:
-          service: 'nginx-proxy'
-          instance: 'nginx-stub-status'
-    metrics_path: '/metrics'
 
   # Tempo metrics
   - job_name: 'tempo'

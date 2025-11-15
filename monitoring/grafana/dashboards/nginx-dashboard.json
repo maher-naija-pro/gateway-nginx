@@ -34,14 +34,19 @@
     },
     {
       "id": 3,
-      "title": "Nginx Response Time",
+      "title": "Nginx Connections (Accepted/Handled)",
       "type": "graph",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, rate(nginx_http_request_duration_seconds_bucket[5m]))",
-          "legendFormat": "p95",
+          "expr": "nginx_connections_accepted",
+          "legendFormat": "Accepted",
           "refId": "A"
+        },
+        {
+          "expr": "nginx_connections_handled",
+          "legendFormat": "Handled",
+          "refId": "B"
         }
       ]
     },
